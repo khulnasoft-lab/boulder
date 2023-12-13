@@ -17,6 +17,7 @@ import (
 	"strings"
 
 	"github.com/letsencrypt/boulder/core"
+	berrors "github.com/letsencrypt/boulder/errors"
 	"github.com/letsencrypt/boulder/identifier"
 	"github.com/letsencrypt/boulder/probs"
 )
@@ -206,10 +207,10 @@ func checkAcceptableExtensions(exts []pkix.Extension, requiredOIDs []asn1.Object
 	return nil
 }
 
-func (va *ValidationAuthorityImpl) validateTLSALPN01(ctx context.Context, identifier identifier.ACMEIdentifier, challenge core.Challenge) ([]core.ValidationRecord, *probs.ProblemDetails) {
+func (va *ValidationAuthorityImpl) validateTLSALPN01(ctx context.Context, identifier identifier.ACMEIdentifier, challenge core.Challenge) ([]core.ValidationRecord, error) {
 	if identifier.Type != "dns" {
 		va.log.Info(fmt.Sprintf("Identifier type for TLS-ALPN-01 was not DNS: %s", identifier))
-		return nil, probs.Malformed("Identifier type for TLS-ALPN-01 was not DNS")
+		return nil, berrors.MalformedError("Identifier type for TLS-ALPN-01 was not DNS")
 	}
 
 	cert, cs, validationRecords, problem := va.tryGetChallengeCert(ctx, identifier, challenge, &tls.Config{
@@ -222,23 +223,19 @@ func (va *ValidationAuthorityImpl) validateTLSALPN01(ctx context.Context, identi
 	}
 
 	if cs.NegotiatedProtocol != ACMETLS1Protocol {
-		errText := fmt.Sprintf(
+		return validationRecords, berrors.UnauthorizedError(
 			"Cannot negotiate ALPN protocol %q for %s challenge",
 			ACMETLS1Protocol,
-			core.ChallengeTypeTLSALPN01,
-		)
-		return validationRecords, probs.Unauthorized(errText)
+			core.ChallengeTypeTLSALPN01)
 	}
 
-	badCertErr := func(msg string) *probs.ProblemDetails {
+	badCertErr := func(msg string) error {
 		hostPort := net.JoinHostPort(validationRecords[0].AddressUsed.String(), validationRecords[0].Port)
 
-		return probs.Unauthorized(fmt.Sprintf(
+		return berrors.UnauthorizedError(
 			"Incorrect validation certificate for %s challenge. "+
-				"Requested %s from %s. "+
-				"%s",
-			challenge.Type, identifier.Value, hostPort, msg,
-		))
+				"Requested %s from %s. %s",
+			challenge.Type, identifier.Value, hostPort, msg)
 	}
 
 	// The certificate must be self-signed.

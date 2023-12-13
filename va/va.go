@@ -395,8 +395,9 @@ func (va *ValidationAuthorityImpl) validate(
 	}
 
 	// TODO(#1292): send into another goroutine
-	validationRecords, prob := va.validateChallenge(ctx, baseIdentifier, challenge)
-	if prob != nil {
+	validationRecords, err := va.validateChallenge(ctx, baseIdentifier, challenge)
+	if err != nil {
+		prob := detailedError(err)
 		// The ProblemDetails will be serialized through gRPC, which requires UTF-8.
 		// It will also later be serialized in JSON, which defaults to UTF-8. Make
 		// sure it is UTF-8 clean now.
@@ -425,7 +426,7 @@ func (va *ValidationAuthorityImpl) validate(
 	return validationRecords, nil
 }
 
-func (va *ValidationAuthorityImpl) validateChallenge(ctx context.Context, identifier identifier.ACMEIdentifier, challenge core.Challenge) ([]core.ValidationRecord, *probs.ProblemDetails) {
+func (va *ValidationAuthorityImpl) validateChallenge(ctx context.Context, identifier identifier.ACMEIdentifier, challenge core.Challenge) ([]core.ValidationRecord, error) {
 	err := challenge.CheckConsistencyForValidation()
 	if err != nil {
 		return nil, probs.Malformed("Challenge failed consistency check: %s", err)
@@ -438,7 +439,7 @@ func (va *ValidationAuthorityImpl) validateChallenge(ctx context.Context, identi
 	case core.ChallengeTypeTLSALPN01:
 		return va.validateTLSALPN01(ctx, identifier, challenge)
 	}
-	return nil, probs.Malformed("invalid challenge type %s", challenge.Type)
+	return nil, berrors.MalformedError("invalid challenge type %s", challenge.Type)
 }
 
 // performRemoteValidation calls `PerformValidation` for each of the configured
