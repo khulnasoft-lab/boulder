@@ -367,7 +367,7 @@ func (va *ValidationAuthorityImpl) validate(
 	identifier identifier.ACMEIdentifier,
 	regid int64,
 	challenge core.Challenge,
-) ([]core.ValidationRecord, *probs.ProblemDetails) {
+) ([]core.ValidationRecord, error) {
 
 	// If the identifier is a wildcard domain we need to validate the base
 	// domain by removing the "*." wildcard prefix. We create a separate
@@ -380,7 +380,7 @@ func (va *ValidationAuthorityImpl) validate(
 
 	// Create this channel outside of the feature-conditional block so that it is
 	// also in scope for the matching block below.
-	ch := make(chan *probs.ProblemDetails, 1)
+	ch := make(chan error, 1)
 	if !features.Get().CAAAfterValidation {
 		// va.checkCAA accepts wildcard identifiers and handles them appropriately so
 		// we can dispatch `checkCAA` with the provided `identifier` instead of
@@ -397,19 +397,20 @@ func (va *ValidationAuthorityImpl) validate(
 	// TODO(#1292): send into another goroutine
 	validationRecords, err := va.validateChallenge(ctx, baseIdentifier, challenge)
 	if err != nil {
-		prob := detailedError(err)
-		// The ProblemDetails will be serialized through gRPC, which requires UTF-8.
-		// It will also later be serialized in JSON, which defaults to UTF-8. Make
-		// sure it is UTF-8 clean now.
-		prob = filterProblemDetails(prob)
+		return validationRecords, err
+		// prob := detailedError(err)
+		// // The ProblemDetails will be serialized through gRPC, which requires UTF-8.
+		// // It will also later be serialized in JSON, which defaults to UTF-8. Make
+		// // sure it is UTF-8 clean now.
+		// prob = filterProblemDetails(prob)
 
-		return validationRecords, prob
+		// return validationRecords, prob
 	}
 
 	if !features.Get().CAAAfterValidation {
 		for i := 0; i < cap(ch); i++ {
-			if extraProblem := <-ch; extraProblem != nil {
-				return validationRecords, extraProblem
+			if extraErr := <-ch; extraErr != nil {
+				return validationRecords, extraErr
 			}
 		}
 	} else {
@@ -417,9 +418,9 @@ func (va *ValidationAuthorityImpl) validate(
 			accountURIID:     regid,
 			validationMethod: challenge.Type,
 		}
-		prob := va.checkCAA(ctx, identifier, params)
-		if prob != nil {
-			return validationRecords, prob
+		err := va.checkCAA(ctx, identifier, params)
+		if err != nil {
+			return validationRecords, err
 		}
 	}
 

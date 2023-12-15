@@ -2,6 +2,7 @@ package va
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/url"
 	"regexp"
@@ -12,7 +13,6 @@ import (
 	corepb "github.com/letsencrypt/boulder/core/proto"
 	berrors "github.com/letsencrypt/boulder/errors"
 	"github.com/letsencrypt/boulder/identifier"
-	"github.com/letsencrypt/boulder/probs"
 	vapb "github.com/letsencrypt/boulder/va/proto"
 	"github.com/miekg/dns"
 )
@@ -40,7 +40,8 @@ func (va *ValidationAuthorityImpl) IsCAAValid(ctx context.Context, req *vapb.IsC
 		accountURIID:     req.AccountURIID,
 		validationMethod: validationMethod,
 	}
-	if prob := va.checkCAA(ctx, acmeID, params); prob != nil {
+	if err := va.checkCAA(ctx, acmeID, params); err != nil {
+		prob := detailedError(err)
 		detail := fmt.Sprintf("While processing CAA for %s: %s", req.Domain, prob.Detail)
 		return &vapb.IsCAAValidResponse{
 			Problem: &corepb.ProblemDetails{
@@ -57,20 +58,20 @@ func (va *ValidationAuthorityImpl) IsCAAValid(ctx context.Context, req *vapb.IsC
 func (va *ValidationAuthorityImpl) checkCAA(
 	ctx context.Context,
 	identifier identifier.ACMEIdentifier,
-	params *caaParams) *probs.ProblemDetails {
+	params *caaParams) error {
 	if params == nil || params.validationMethod == "" || params.accountURIID == 0 {
-		return probs.ServerInternal("expected validationMethod or accountURIID not provided to checkCAA")
+		return errors.New("expected validationMethod or accountURIID not provided to checkCAA")
 	}
 
 	foundAt, valid, response, err := va.checkCAARecords(ctx, identifier, params)
 	if err != nil {
-		return probs.DNS(err.Error())
+		return berrors.DNSError("%s", err)
 	}
 
 	va.log.AuditInfof("Checked CAA records for %s, [Present: %t, Account ID: %d, Challenge: %s, Valid for issuance: %t, Found at: %q] Response=%q",
 		identifier.Value, foundAt != "", params.accountURIID, params.validationMethod, valid, foundAt, response)
 	if !valid {
-		return probs.CAA(fmt.Sprintf("CAA record for %s prevents issuance", foundAt))
+		return berrors.CAAError("CAA record for %s prevents issuance", foundAt)
 	}
 	return nil
 }
