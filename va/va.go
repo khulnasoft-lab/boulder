@@ -351,6 +351,12 @@ func detailedError(err error) *probs.ProblemDetails {
 	if errors.Is(err, berrors.DNS) {
 		return probs.DNS(err.Error())
 	}
+	if errors.Is(err, berrors.Malformed) {
+		return probs.Malformed(err.Error())
+	}
+	if errors.Is(err, berrors.CAA) {
+		return probs.CAA(err.Error())
+	}
 
 	if h2SettingsFrameErrRegex.MatchString(err.Error()) {
 		return probs.Connection("Server is speaking HTTP/2 over HTTP")
@@ -398,13 +404,6 @@ func (va *ValidationAuthorityImpl) validate(
 	validationRecords, err := va.validateChallenge(ctx, baseIdentifier, challenge)
 	if err != nil {
 		return validationRecords, err
-		// prob := detailedError(err)
-		// // The ProblemDetails will be serialized through gRPC, which requires UTF-8.
-		// // It will also later be serialized in JSON, which defaults to UTF-8. Make
-		// // sure it is UTF-8 clean now.
-		// prob = filterProblemDetails(prob)
-
-		// return validationRecords, prob
 	}
 
 	if !features.Get().CAAAfterValidation {
@@ -430,7 +429,7 @@ func (va *ValidationAuthorityImpl) validate(
 func (va *ValidationAuthorityImpl) validateChallenge(ctx context.Context, identifier identifier.ACMEIdentifier, challenge core.Challenge) ([]core.ValidationRecord, error) {
 	err := challenge.CheckConsistencyForValidation()
 	if err != nil {
-		return nil, probs.Malformed("Challenge failed consistency check: %s", err)
+		return nil, berrors.MalformedError("Challenge failed consistency check: %s", err)
 	}
 	switch challenge.Type {
 	case core.ChallengeTypeHTTP01:
@@ -686,24 +685,26 @@ func (va *ValidationAuthorityImpl) PerformValidation(ctx context.Context, req *v
 
 	challenge, err := bgrpc.PBToChallenge(req.Challenge)
 	if err != nil {
-		return nil, probs.ServerInternal("Challenge failed to deserialize")
+		return nil, errors.New("Challenge failed to deserialize")
 	}
 
-	records, prob := va.validate(ctx, identifier.DNSIdentifier(req.Domain), req.Authz.RegID, challenge)
+	records, err := va.validate(ctx, identifier.DNSIdentifier(req.Domain), req.Authz.RegID, challenge)
 	challenge.ValidationRecord = records
 	localValidationLatency := time.Since(vStart)
 
 	// Check for malformed ValidationRecords
-	if !challenge.RecordsSane() && prob == nil {
-		prob = probs.ServerInternal("Records for validation failed sanity check")
+	if !challenge.RecordsSane() && err == nil {
+		err = errors.New("Records for validation failed sanity check")
 	}
 
 	var problemType string
-	if prob != nil {
+	var prob *probs.ProblemDetails
+	if err != nil {
+		prob = detailedError(err)
 		problemType = string(prob.Type)
 		challenge.Status = core.StatusInvalid
 		challenge.Error = prob
-		logEvent.Error = prob.Error()
+		logEvent.Error = fmt.Sprintf("%s :: %s", prob.Type, prob.Detail)
 	} else if remoteResults != nil {
 		if !features.Get().EnforceMultiVA && features.Get().MultiVAFullResults {
 			// If we're not going to enforce multi VA but we are logging the
@@ -736,7 +737,7 @@ func (va *ValidationAuthorityImpl) PerformValidation(ctx context.Context, req *v
 				prob = remoteProb
 				challenge.Status = core.StatusInvalid
 				challenge.Error = remoteProb
-				logEvent.Error = remoteProb.Error()
+				logEvent.Error = fmt.Sprintf("%s :: %s", remoteProb.Type, remoteProb.Detail)
 				va.log.Infof("Validation failed due to remote failures: identifier=%v err=%s",
 					req.Domain, remoteProb)
 				va.metrics.remoteValidationFailures.Inc()
@@ -765,5 +766,9 @@ func (va *ValidationAuthorityImpl) PerformValidation(ctx context.Context, req *v
 
 	va.log.AuditObject("Validation result", logEvent)
 
+	// The ProblemDetails will be serialized through gRPC, which requires UTF-8.
+	// It will also later be serialized in JSON, which defaults to UTF-8. Make
+	// sure it is UTF-8 clean now.
+	prob = filterProblemDetails(prob)
 	return bgrpc.ValidationResultToPB(records, prob)
 }
